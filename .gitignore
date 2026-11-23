@@ -1,0 +1,11 @@
+storage/
+.env
+.venv/
+__pycache__/
+node_modules/
+dist/
+eval/runs/
+.DS_Store
+
+# Personal quiz history (single file, never commit)
+docs/learning/quiz-bank.md

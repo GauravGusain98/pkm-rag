@@ -1,0 +1,78 @@
+# Local infrastructure for PKM-RAG.
+# Only the stateful services run in Docker. The API and worker run on the host via `make api` / `make worker`
+# until Phase 4. Ollama runs natively on macOS (Metal GPU), see ADR-0002.
+
+name: pkm-rag
+
+services:
+  postgres:
+    # The official Postgres 16 image with the pgvector extension compiled in.
+    # The extension still has to be enabled per database (`CREATE EXTENSION vector`),
+    # which we'll do in the first Alembic migration in Phase 1, so it's versioned with the schema.
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pkm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pkm}
+      POSTGRES_DB: ${POSTGRES_DB:-pkm}
+    ports:
+      # Bound to 127.0.0.1 so the database isn't reachable from your Wi-Fi network.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"] 
+      interval: 10s
+      retries: 5
+      # During start_period: failed checks don't count toward retries. The container stays in the starting state instead of becoming unhealthy
+      start_period: 30s
+      timeout: 10s
+    restart: unless-stopped
+
+  redis-queue:
+    # Append Only (AOF) is on so jobs survive a crash; noeviction because losing a job leaves a document stuck in queued.
+    image: redis:7-alpine
+    command: > 
+      redis-server 
+      --appendonly yes 
+      --maxmemory 256mb
+      --maxmemory-policy noeviction
+    ports:
+      - "127.0.0.1:${REDIS_QUEUE_PORT:-6380}:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  redis-cache:
+    # This service is purely for caching so no volume is needed and AOF & RDB is also off
+    image: redis:7-alpine
+    command: > 
+      redis-server 
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save ""
+    ports:
+      - "127.0.0.1:${REDIS_CACHE_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
+
+  # TODO(you), Phase 4: the Celery `worker` service lands here. When it does, give it
+  #   depends_on:
+  #     postgres: { condition: ??? }
+  #     redis-queue:    { condition: ??? }
+  # and set OLLAMA_URL to reach the host. Why can't it use localhost:11434 from inside the container?
+
+volumes:
+  # Named volumes survive `docker compose down`. They are deleted by `docker compose down -v`.
+  pgdata:
+  redisdata:
